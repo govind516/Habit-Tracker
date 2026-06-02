@@ -161,6 +161,10 @@ body{font-family:'DM Mono',monospace;background:var(--bg);color:var(--text);min-
 button.tab{font-family:'DM Mono',monospace;background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 14px;cursor:pointer;color:var(--text-sub);font-size:11px;transition:all .15s;letter-spacing:0.02em}
 button.tab.active{background:var(--accent-bg);border-color:var(--accent-dim);color:var(--accent);font-weight:500}
 button.tab:hover:not(.active){background:var(--surface);border-color:var(--border2);color:var(--text)}
+.utility-row{display:flex;gap:6px;margin-bottom:1.25rem;flex-wrap:wrap;align-items:center}
+.utility-btn{font-family:'DM Mono',monospace;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 10px;cursor:pointer;color:var(--text-sub);font-size:10px;transition:all .15s;letter-spacing:0.02em}
+.utility-btn:hover{background:var(--surface2);border-color:var(--accent-dim);color:var(--accent)}
+.utility-note{font-size:10px;color:var(--text-muted)}
 
 /* TIME-OF-DAY GROUP ROWS */
 .group-row td{background:var(--surface2) !important;font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;padding:5px 8px;color:var(--text-muted);border-bottom:1px solid var(--border)}
@@ -360,6 +364,13 @@ button.tab:hover:not(.active){background:var(--surface);border-color:var(--borde
       <button class="tab" onclick="switchView('datewise')">Date-wise</button>
       <button class="tab" onclick="switchView('monthly')">Monthly overview</button>
     </div>
+    <div class="utility-row">
+      <button class="utility-btn" onclick="exportNotionCsv()">Export Notion CSV</button>
+      <button class="utility-btn" onclick="exportBackupJson()">Backup JSON</button>
+      <button class="utility-btn" onclick="document.getElementById('backupInput').click()">Import backup</button>
+      <input id="backupInput" type="file" accept="application/json,.json" style="display:none" onchange="importBackupJson(event)">
+      <span class="utility-note">History stays in this browser. Keep backups before switching devices.</span>
+    </div>
 
     <!-- WEEKLY VIEW -->
     <div id="viewWeekly">
@@ -439,8 +450,15 @@ let miniCalOffset = 0;
 let selMonth, selYear;
 
 function today(){ return new Date(); }
-function dateKey(d){ return d.toISOString().slice(0,10); }
+function dateKey(d){
+  const dt = new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+}
 function todayKey(){ return dateKey(today()); }
+function localDateFromKey(dk){
+  const [y,m,d] = dk.split('-').map(Number);
+  return new Date(y,m-1,d);
+}
 
 function saveData(){
   localStorage.setItem('habitData2',      JSON.stringify(data));
@@ -448,6 +466,38 @@ function saveData(){
   localStorage.setItem('habitNotes',      JSON.stringify(notesData));
   localStorage.setItem('habitPriorities', JSON.stringify(priorityData));
 }
+
+function normalizeStoredData(){
+  if(!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+  Object.keys(data).forEach(dk=>{
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(dk) || !data[dk] || typeof data[dk] !== 'object' || Array.isArray(data[dk])){
+      delete data[dk];
+      return;
+    }
+    Object.keys(data[dk]).forEach(habitId=>{
+      if(!DAILY_HABITS.some(h=>h.id===habitId) || !data[dk][habitId]) delete data[dk][habitId];
+    });
+    if(!Object.keys(data[dk]).length) delete data[dk];
+  });
+
+  if(!weeklyData || typeof weeklyData !== 'object' || Array.isArray(weeklyData)) weeklyData = {};
+  Object.keys(weeklyData).forEach(wk=>{
+    if(!/^\d{4}-W\d{2}$/.test(wk) || !weeklyData[wk] || typeof weeklyData[wk] !== 'object' || Array.isArray(weeklyData[wk])){
+      delete weeklyData[wk];
+      return;
+    }
+    Object.keys(weeklyData[wk]).forEach(habitId=>{
+      if(!WEEKLY_HABITS.some(h=>h.id===habitId) || !weeklyData[wk][habitId]) delete weeklyData[wk][habitId];
+    });
+    if(!Object.keys(weeklyData[wk]).length) delete weeklyData[wk];
+  });
+
+  if(!Array.isArray(notesData)) notesData = [];
+  if(!Array.isArray(priorityData)) priorityData = [];
+  saveData();
+}
+
+normalizeStoredData();
 
 // Reset priorities if saved on a different day
 (function checkPriorityDate(){
@@ -524,7 +574,7 @@ function renderMiniCal(){
 }
 function shiftMiniCal(dir){ miniCalOffset+=dir; renderMiniCal(); }
 function calDayClick(dk){
-  const d=new Date(dk);
+  const d=localDateFromKey(dk);
   selMonth=d.getMonth(); selYear=d.getFullYear();
   document.getElementById('monthSel').value=selMonth;
   document.getElementById('yearSel').value=selYear;
@@ -597,11 +647,86 @@ function updateStats(){
   let best=0,cur=0,prev=null;
   for(const dk of Object.keys(data).sort()){
     if(dayPct(dk)>=75){
-      if(prev){ const diff=(new Date(dk)-new Date(prev))/86400000; cur=diff===1?cur+1:1; } else cur=1;
+      if(prev){ const diff=(localDateFromKey(dk)-localDateFromKey(prev))/86400000; cur=diff===1?cur+1:1; } else cur=1;
       best=Math.max(best,cur);
     } else cur=0; prev=dk;
   }
   document.getElementById('statStreak').textContent=best;
+}
+
+// ── EXPORT / IMPORT ─────────────────────────────────────────────────────
+function downloadFile(filename, content, type){
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function csvEscape(value){
+  const s = String(value ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+}
+
+function exportNotionCsv(){
+  const rows = [['Date','Habit','Completed','Category','Completion %']];
+  const keys = Object.keys(data).sort();
+  if(!keys.length) keys.push(todayKey());
+  keys.forEach(dk=>{
+    const pct = dayPct(dk);
+    DAILY_HABITS.forEach(h=>{
+      rows.push([dk,h.label,data[dk]?.[h.id] ? 'Yes' : 'No',GROUP_META[h.group]?.label || h.group,pct]);
+    });
+  });
+  const csv = rows.map(row=>row.map(csvEscape).join(',')).join('\n');
+  downloadFile(`habit-tracker-notion-${todayKey()}.csv`, csv, 'text/csv;charset=utf-8');
+}
+
+function exportBackupJson(){
+  const backup = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    dailyHabits: DAILY_HABITS,
+    weeklyHabits: WEEKLY_HABITS,
+    data,
+    weeklyData,
+    notesData,
+    priorityData
+  };
+  downloadFile(`habit-tracker-backup-${todayKey()}.json`, JSON.stringify(backup,null,2), 'application/json;charset=utf-8');
+}
+
+function importBackupJson(event){
+  const file = event.target.files && event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const backup = JSON.parse(reader.result);
+      const nextData = backup.data || {};
+      const nextWeekly = backup.weeklyData || {};
+      if(!nextData || typeof nextData !== 'object' || Array.isArray(nextData)) throw new Error('Invalid daily data');
+      if(!nextWeekly || typeof nextWeekly !== 'object' || Array.isArray(nextWeekly)) throw new Error('Invalid weekly data');
+      if(!confirm('Import this backup and replace the tracker data in this browser?')) return;
+      data = nextData;
+      weeklyData = nextWeekly;
+      notesData = Array.isArray(backup.notesData) ? backup.notesData : [];
+      priorityData = Array.isArray(backup.priorityData) ? backup.priorityData : [];
+      normalizeStoredData();
+      renderNotes();
+      renderPriorities();
+      render();
+    }catch(err){
+      alert('Could not import this backup file. Please choose a valid habit tracker JSON backup.');
+    }finally{
+      event.target.value = '';
+    }
+  };
+  reader.readAsText(file);
 }
 
 // ── WEEKLY DAILY TABLE ───────────────────────────────────────────────────
